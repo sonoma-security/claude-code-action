@@ -455,4 +455,185 @@ describe("checkWritePermissions", () => {
       expect(result).toBe(true);
     });
   });
+
+  describe("PR-author bypass for allowed_bots", () => {
+    // When the event is a pull_request* event and the PR was authored by
+    // a login in allowed_bots, the workflow's `if:` has already authorized
+    // it on PR-author identity. Skip the collaborator-permission lookup on
+    // the triggering actor — that lookup 404s for org members not listed
+    // as direct collaborators and would otherwise block the workflow.
+
+    const octokitThatMustNotBeCalled = () =>
+      ({
+        repos: {
+          getCollaboratorPermissionLevel: async () => {
+            throw new Error(
+              "octokit.repos.getCollaboratorPermissionLevel should not be called when PR-author bypass applies",
+            );
+          },
+        },
+      }) as any;
+
+    const createPullRequestContext = (
+      prAuthorLogin: string,
+      triggeringActor: string,
+    ) => {
+      const context = createContext();
+      context.eventName = "pull_request";
+      context.eventAction = "opened";
+      context.isPR = true;
+      context.actor = triggeringActor;
+      context.payload = {
+        action: "opened",
+        number: 200,
+        pull_request: {
+          number: 200,
+          user: { login: prAuthorLogin },
+        },
+      } as any;
+      return context;
+    };
+
+    test("should grant access when PR author is in allowed_bots", async () => {
+      const context = createPullRequestContext(
+        "sonoma-ai-author",
+        "human-pusher",
+      );
+      context.inputs.allowedBots = "sonoma-ai-author";
+
+      const result = await checkWritePermissions(
+        octokitThatMustNotBeCalled(),
+        context,
+      );
+
+      expect(result).toBe(true);
+      expect(coreInfoSpy).toHaveBeenCalledWith(
+        "PR author sonoma-ai-author is in allowed_bots; granting access (triggering actor: human-pusher)",
+      );
+    });
+
+    test("should grant access when allowed_bots is '*'", async () => {
+      const context = createPullRequestContext(
+        "any-bot-account",
+        "human-pusher",
+      );
+      context.inputs.allowedBots = "*";
+
+      const result = await checkWritePermissions(
+        octokitThatMustNotBeCalled(),
+        context,
+      );
+
+      expect(result).toBe(true);
+    });
+
+    test("should NOT bypass when PR author is not in allowed_bots", async () => {
+      // PR author not trusted — falls through to the standard write check.
+      const mockOctokit = createMockOctokit("read");
+      const context = createPullRequestContext("untrusted-bot", "human-pusher");
+      context.inputs.allowedBots = "sonoma-ai-author";
+
+      const result = await checkWritePermissions(mockOctokit, context);
+
+      expect(result).toBe(false);
+    });
+
+    test("should NOT bypass for issue_comment on a regular issue", async () => {
+      // Non-PR event — the bypass is scoped to pull_request* event types.
+      const mockOctokit = createMockOctokit("write");
+      const context = createContext();
+      context.actor = "human-user";
+      context.inputs.allowedBots = "sonoma-ai-author";
+
+      const result = await checkWritePermissions(mockOctokit, context);
+
+      expect(result).toBe(true); // grants because triggering actor has write, not because of bypass
+      expect(coreInfoSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("PR author"),
+      );
+    });
+
+    test("should NOT bypass when pull_request.user is missing from payload", async () => {
+      const mockOctokit = createMockOctokit("read");
+      const context = createContext();
+      context.eventName = "pull_request";
+      context.isPR = true;
+      context.actor = "human-pusher";
+      context.inputs.allowedBots = "*";
+      context.payload = {
+        action: "opened",
+        pull_request: {},
+      } as any;
+
+      const result = await checkWritePermissions(mockOctokit, context);
+
+      expect(result).toBe(false);
+    });
+
+    test("should bypass on pull_request_review event", async () => {
+      const context = createContext();
+      context.eventName = "pull_request_review";
+      context.isPR = true;
+      context.actor = "human-pusher";
+      context.inputs.allowedBots = "sonoma-ai-author";
+      context.payload = {
+        action: "submitted",
+        pull_request: {
+          user: { login: "sonoma-ai-author" },
+        },
+      } as any;
+
+      const result = await checkWritePermissions(
+        octokitThatMustNotBeCalled(),
+        context,
+      );
+
+      expect(result).toBe(true);
+    });
+
+    test("should bypass on pull_request_review_comment event", async () => {
+      const context = createContext();
+      context.eventName = "pull_request_review_comment";
+      context.isPR = true;
+      context.actor = "human-pusher";
+      context.inputs.allowedBots = "sonoma-ai-author";
+      context.payload = {
+        action: "created",
+        pull_request: {
+          user: { login: "sonoma-ai-author" },
+        },
+      } as any;
+
+      const result = await checkWritePermissions(
+        octokitThatMustNotBeCalled(),
+        context,
+      );
+
+      expect(result).toBe(true);
+    });
+
+    test("should bypass even when triggering actor would 404", async () => {
+      // Concrete reproduction of the failure mode this bypass exists for:
+      // triggering actor is an org admin who isn't a direct collaborator,
+      // so the API would 404. The bypass short-circuits before we get there.
+      const context = createPullRequestContext("sonoma-ai-author", "scobbe");
+      context.inputs.allowedBots = "sonoma-ai-author";
+
+      const mockOctokit = {
+        repos: {
+          getCollaboratorPermissionLevel: async () => {
+            const err = new Error(
+              "Not Found - https://docs.github.com/rest/collaborators/collaborators#get-repository-permissions-for-a-user",
+            );
+            (err as any).status = 404;
+            throw err;
+          },
+        },
+      } as any;
+
+      const result = await checkWritePermissions(mockOctokit, context);
+
+      expect(result).toBe(true);
+    });
+  });
 });

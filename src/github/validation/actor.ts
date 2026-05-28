@@ -7,31 +7,28 @@
 
 import type { Octokit } from "@octokit/rest";
 import type { GitHubContext } from "../context";
-
-function isAllowedBot(actor: string, allowedBots: string): boolean {
-  const trimmed = allowedBots.trim();
-  if (trimmed === "*") return true;
-  if (!trimmed) return false;
-
-  const allowedList = trimmed
-    .split(",")
-    .map((bot) =>
-      bot
-        .trim()
-        .toLowerCase()
-        .replace(/\[bot\]$/, ""),
-    )
-    .filter((bot) => bot.length > 0);
-
-  const normalizedActor = actor.toLowerCase().replace(/\[bot\]$/, "");
-  return allowedList.includes(normalizedActor);
-}
+import { getAllowedBotPrAuthor, isAllowedBot } from "./allowed-bots";
 
 export async function checkHumanActor(
   octokit: Octokit,
   githubContext: GitHubContext,
 ) {
   const allowedBots = githubContext.inputs.allowedBots;
+
+  // PR-author bypass: when this is a pull_request* event and the PR was
+  // authored by a login in allowed_bots, the workflow's `if:` has already
+  // authorized it on PR-author identity. The triggering actor is irrelevant
+  // (it may be a human teammate who locally pushed a follow-up commit to a
+  // bot-authored branch). Skip the user-lookup entirely. See
+  // getAllowedBotPrAuthor for the full rationale.
+  const botPrAuthor = getAllowedBotPrAuthor(githubContext, allowedBots);
+  if (botPrAuthor) {
+    console.log(
+      `PR author ${botPrAuthor} is in allowed_bots; skipping human actor check (triggering actor: ${githubContext.actor})`,
+    );
+    return;
+  }
+
   const actor = githubContext.actor;
 
   // Resolve the actor's account type before consulting allowed_bots so the

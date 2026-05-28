@@ -1,28 +1,7 @@
 import * as core from "@actions/core";
 import type { ParsedGitHubContext } from "../context";
 import type { Octokit } from "@octokit/rest";
-
-/**
- * Check if a bot actor is in the allowed bots list.
- */
-function isAllowedBot(actor: string, allowedBots: string): boolean {
-  const trimmed = allowedBots.trim();
-  if (trimmed === "*") return true;
-  if (!trimmed) return false;
-
-  const allowedList = trimmed
-    .split(",")
-    .map((bot) =>
-      bot
-        .trim()
-        .toLowerCase()
-        .replace(/\[bot\]$/, ""),
-    )
-    .filter((bot) => bot.length > 0);
-
-  const normalizedActor = actor.toLowerCase().replace(/\[bot\]$/, "");
-  return allowedList.includes(normalizedActor);
-}
+import { getAllowedBotPrAuthor, isAllowedBot } from "./allowed-bots";
 
 /**
  * Check if the actor has write permissions to the repository
@@ -43,6 +22,19 @@ export async function checkWritePermissions(
 
   try {
     core.info(`Checking permissions for actor: ${actor}`);
+
+    // PR-author bypass: when this is a pull_request* event and the PR was
+    // authored by a login in allowed_bots, the workflow is authorized on
+    // PR-author identity regardless of who triggered the run. The
+    // collaborator-permission lookup against the triggering actor is the
+    // wrong question — see getAllowedBotPrAuthor for the full rationale.
+    const botPrAuthor = getAllowedBotPrAuthor(context, allowedBots);
+    if (botPrAuthor) {
+      core.info(
+        `PR author ${botPrAuthor} is in allowed_bots; granting access (triggering actor: ${actor})`,
+      );
+      return true;
+    }
 
     // Check if we should bypass permission checks for this user
     if (allowedNonWriteUsers && githubTokenProvided) {

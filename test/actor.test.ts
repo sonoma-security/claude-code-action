@@ -3,6 +3,7 @@
 import { describe, test, expect } from "bun:test";
 import { checkHumanActor } from "../src/github/validation/actor";
 import type { Octokit } from "@octokit/rest";
+import type { PullRequestEvent } from "@octokit/webhooks-types";
 import { createMockContext } from "./mockContext";
 
 function createMockOctokit(userType: string): Octokit {
@@ -213,6 +214,160 @@ describe("checkHumanActor", () => {
       await expect(checkHumanActor(mockOctokit, context)).rejects.toThrow(
         "Internal Server Error",
       );
+    });
+  });
+
+  describe("PR-author bypass for allowed_bots", () => {
+    // When the event is a pull_request* event and the PR author is in
+    // allowed_bots, the triggering actor's account type is irrelevant —
+    // the PR-author identity is the trust signal. The user lookup is
+    // skipped so a 404 on the triggering actor (e.g. an org admin not
+    // listed as a direct collaborator) doesn't block the workflow.
+
+    function createPullRequestContext(
+      prAuthorLogin: string,
+      triggeringActor: string,
+    ) {
+      const context = createMockContext();
+      context.eventName = "pull_request";
+      context.eventAction = "opened";
+      context.isPR = true;
+      context.actor = triggeringActor;
+      context.payload = {
+        action: "opened",
+        number: 100,
+        pull_request: {
+          number: 100,
+          user: { login: prAuthorLogin },
+        },
+      } as unknown as PullRequestEvent;
+      return context;
+    }
+
+    function octokitThatMustNotBeCalled(): Octokit {
+      return {
+        users: {
+          getByUsername: async () => {
+            throw new Error(
+              "octokit.users.getByUsername should not be called when PR-author bypass applies",
+            );
+          },
+        },
+      } as unknown as Octokit;
+    }
+
+    test("should bypass user lookup when PR author is in allowed_bots", async () => {
+      const context = createPullRequestContext(
+        "sonoma-ai-author",
+        "human-pusher",
+      );
+      context.inputs.allowedBots = "sonoma-ai-author";
+
+      await expect(
+        checkHumanActor(octokitThatMustNotBeCalled(), context),
+      ).resolves.toBeUndefined();
+    });
+
+    test("should bypass user lookup when allowed_bots is '*'", async () => {
+      const context = createPullRequestContext(
+        "any-bot-account",
+        "human-pusher",
+      );
+      context.inputs.allowedBots = "*";
+
+      await expect(
+        checkHumanActor(octokitThatMustNotBeCalled(), context),
+      ).resolves.toBeUndefined();
+    });
+
+    test("should match PR author case-insensitively", async () => {
+      const context = createPullRequestContext(
+        "Sonoma-AI-Author",
+        "human-pusher",
+      );
+      context.inputs.allowedBots = "sonoma-ai-author";
+
+      await expect(
+        checkHumanActor(octokitThatMustNotBeCalled(), context),
+      ).resolves.toBeUndefined();
+    });
+
+    test("should NOT bypass when PR author is not in allowed_bots", async () => {
+      // PR author isn't trusted — falls through to standard actor resolution.
+      const mockOctokit = createMockOctokit("User");
+      const context = createPullRequestContext("untrusted-bot", "human-pusher");
+      context.inputs.allowedBots = "sonoma-ai-author";
+
+      await expect(
+        checkHumanActor(mockOctokit, context),
+      ).resolves.toBeUndefined();
+    });
+
+    test("should NOT bypass for issue_comment on a regular issue", async () => {
+      // Non-PR event — the bypass is scoped to pull_request* event types.
+      const mockOctokit = createMockOctokit("User");
+      const context = createMockContext();
+      context.eventName = "issue_comment";
+      context.isPR = false;
+      context.actor = "human-user";
+      context.inputs.allowedBots = "sonoma-ai-author";
+
+      await expect(
+        checkHumanActor(mockOctokit, context),
+      ).resolves.toBeUndefined();
+    });
+
+    test("should NOT bypass when pull_request.user is missing from payload", async () => {
+      const mockOctokit = createMockOctokit("User");
+      const context = createMockContext();
+      context.eventName = "pull_request";
+      context.isPR = true;
+      context.actor = "human-user";
+      context.inputs.allowedBots = "*";
+      context.payload = {
+        action: "opened",
+        pull_request: {},
+      } as unknown as PullRequestEvent;
+
+      await expect(
+        checkHumanActor(mockOctokit, context),
+      ).resolves.toBeUndefined();
+    });
+
+    test("should bypass on pull_request_review event", async () => {
+      const context = createMockContext();
+      context.eventName = "pull_request_review";
+      context.isPR = true;
+      context.actor = "human-pusher";
+      context.inputs.allowedBots = "sonoma-ai-author";
+      context.payload = {
+        action: "submitted",
+        pull_request: {
+          user: { login: "sonoma-ai-author" },
+        },
+      } as any;
+
+      await expect(
+        checkHumanActor(octokitThatMustNotBeCalled(), context),
+      ).resolves.toBeUndefined();
+    });
+
+    test("should bypass on pull_request_review_comment event", async () => {
+      const context = createMockContext();
+      context.eventName = "pull_request_review_comment";
+      context.isPR = true;
+      context.actor = "human-pusher";
+      context.inputs.allowedBots = "sonoma-ai-author";
+      context.payload = {
+        action: "created",
+        pull_request: {
+          user: { login: "sonoma-ai-author" },
+        },
+      } as any;
+
+      await expect(
+        checkHumanActor(octokitThatMustNotBeCalled(), context),
+      ).resolves.toBeUndefined();
     });
   });
 });
