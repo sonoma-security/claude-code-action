@@ -155,9 +155,19 @@ export async function runClaudeWithSdk(
 
   const messages: SDKMessage[] = [];
   let resultMessage: SDKResultMessage | undefined;
+  let executionFile: string | undefined;
+  let session: ReturnType<typeof query> | undefined;
 
   try {
-    for await (const message of query({ prompt, options: sdkOptions })) {
+    session = query({ prompt, options: sdkOptions });
+    // The result is the terminal event for this single-prompt run. Waiting for
+    // stream EOF can hang on a CLI/MCP child after the model has finished.
+    // Do not use for-await + break: that awaits iterator.return(), which can
+    // wait on the same shutdown. Close the SDK query explicitly instead.
+    while (true) {
+      const next = await session.next();
+      if (next.done) break;
+      const message = next.value;
       messages.push(message);
 
       const sanitized = sanitizeSdkOutput(message, showFullOutput);
@@ -167,19 +177,23 @@ export async function runClaudeWithSdk(
 
       if (message.type === "result") {
         resultMessage = message as SDKResultMessage;
+        break;
       }
     }
   } catch (error) {
     console.error("SDK execution error:", error);
-    await writeExecutionFile(messages);
     throw new Error(`SDK execution error: ${error}`);
+  } finally {
+    // Persist the complete verdict before cleanup, including failure results,
+    // so retry classification and review publication never lose the outcome.
+    executionFile = await writeExecutionFile(messages);
+    session?.close();
   }
 
   const result: ClaudeRunResult = {
     conclusion: "failure",
   };
 
-  const executionFile = await writeExecutionFile(messages);
   if (executionFile) {
     result.executionFile = executionFile;
   }
