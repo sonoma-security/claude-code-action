@@ -2,10 +2,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
-const server = new McpServer({
-  name: "test-server",
-  version: "1.0.0",
-});
+const server = new McpServer(
+  { name: "test-server", version: "1.0.0" },
+  { maxToolInputElements: 10_000 },
+);
 
 server.tool("test_tool", "A simple test tool", {}, async () => {
   return {
