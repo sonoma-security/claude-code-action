@@ -141,6 +141,9 @@ async function executeClaudeCommand(
   errorContext: string,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    // This audit rule flags a configurable executable. The CLI path is an operator
+    // configuration value, and spawn receives an argument array without a shell.
+    // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
     const childProcess: ChildProcess = spawn(claudeExecutable, args, {
       stdio: "inherit",
     });

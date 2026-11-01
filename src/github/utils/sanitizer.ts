@@ -97,4 +97,4 @@ export function redactGitHubTokens(content: string): string {
 }
 
 export const stripHtmlComments = (content: string) =>
-  content.replace(/<!--[\s\S]*?-->/g, "");
+  content.replace(new RegExp("<!--[\\s\\S]*?-->", "g"), "");

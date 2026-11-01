@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createLimitedMcpServer } from "./server-limits";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { GITHUB_API_URL } from "../github/api/config";
@@ -20,7 +20,7 @@ if (!REPO_OWNER || !REPO_NAME || !PR_NUMBER || !GITHUB_TOKEN) {
   process.exit(1);
 }
 
-const server = new McpServer({
+const server = createLimitedMcpServer({
   name: "GitHub CI Server",
   version: "0.0.1",
 });

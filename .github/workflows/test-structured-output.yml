@@ -2,8 +2,12 @@ name: Test Structured Outputs
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
   workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
 
 permissions:
   contents: read
@@ -12,9 +16,33 @@ jobs:
   test-basic-types:
     name: Test Basic Type Conversions
     runs-on: ubuntu-latest
+    environment: &claude_ci_environment
+      name: >-
+        ${{ github.event_name != 'pull_request_target' &&
+        github.actor != 'dependabot[bot]' &&
+        github.event.pull_request.draft != true &&
+        (((github.event_name == 'pull_request' || github.event_name == 'workflow_call') &&
+          github.event.pull_request.head.repo.full_name == github.repository) ||
+         ((github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call') &&
+          github.ref == 'refs/heads/main' &&
+          (github.event.pull_request.head.repo.full_name == '' ||
+           github.event.pull_request.head.repo.full_name == github.repository))) &&
+        'security-ci-claude' || 'security-ci-untrusted' }}
     steps:
+      - &require_claude_ci
+        name: Require Claude CI authentication
+        env:
+          CLAUDE_CI_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$CLAUDE_CI_TOKEN" ]; then
+            echo "::error::Claude CI authentication is unavailable for this context."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
 
       - name: Test with explicit values
         id: test
@@ -28,41 +56,43 @@ jobs:
             - number_field: 42
             - boolean_true: true
             - boolean_false: false
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             --allowedTools Bash
             --json-schema '{"type":"object","properties":{"text_field":{"type":"string"},"number_field":{"type":"number"},"boolean_true":{"type":"boolean"},"boolean_false":{"type":"boolean"}},"required":["text_field","number_field","boolean_true","boolean_false"]}'
 
       - name: Verify outputs
+        env:
+          ACTION_STRUCTURED_OUTPUT: ${{ steps.test.outputs.structured_output }}
         run: |
           # Parse the structured_output JSON
-          OUTPUT='${{ steps.test.outputs.structured_output }}'
+          OUTPUT="$ACTION_STRUCTURED_OUTPUT"
 
           # Test string pass-through
-          TEXT_FIELD=$(echo "$OUTPUT" | jq -r '.text_field')
+          TEXT_FIELD=$(printf '%s' "$OUTPUT" | jq -r '.text_field' 2>/dev/null)
           if [ "$TEXT_FIELD" != "hello" ]; then
-            echo "❌ String: expected 'hello', got '$TEXT_FIELD'"
+            echo "❌ String field must equal 'hello'."
             exit 1
           fi
 
           # Test number → string conversion
-          NUMBER_FIELD=$(echo "$OUTPUT" | jq -r '.number_field')
+          NUMBER_FIELD=$(printf '%s' "$OUTPUT" | jq -r '.number_field' 2>/dev/null)
           if [ "$NUMBER_FIELD" != "42" ]; then
-            echo "❌ Number: expected '42', got '$NUMBER_FIELD'"
+            echo "❌ Number field must equal 42."
             exit 1
           fi
 
           # Test boolean → "true" conversion
-          BOOLEAN_TRUE=$(echo "$OUTPUT" | jq -r '.boolean_true')
+          BOOLEAN_TRUE=$(printf '%s' "$OUTPUT" | jq -r '.boolean_true' 2>/dev/null)
           if [ "$BOOLEAN_TRUE" != "true" ]; then
-            echo "❌ Boolean true: expected 'true', got '$BOOLEAN_TRUE'"
+            echo "❌ Boolean true field must be true."
             exit 1
           fi
 
           # Test boolean → "false" conversion
-          BOOLEAN_FALSE=$(echo "$OUTPUT" | jq -r '.boolean_false')
+          BOOLEAN_FALSE=$(printf '%s' "$OUTPUT" | jq -r '.boolean_false' 2>/dev/null)
           if [ "$BOOLEAN_FALSE" != "false" ]; then
-            echo "❌ Boolean false: expected 'false', got '$BOOLEAN_FALSE'"
+            echo "❌ Boolean false field must be false."
             exit 1
           fi
 
@@ -71,9 +101,14 @@ jobs:
   test-complex-types:
     name: Test Arrays and Objects
     runs-on: ubuntu-latest
+    environment: *claude_ci_environment
     steps:
+      - *require_claude_ci
+
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
 
       - name: Test complex types
         id: test
@@ -86,34 +121,36 @@ jobs:
             - items: ["apple", "banana", "cherry"]
             - config: {"key": "value", "count": 3}
             - empty_array: []
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             --allowedTools Bash
             --json-schema '{"type":"object","properties":{"items":{"type":"array","items":{"type":"string"}},"config":{"type":"object"},"empty_array":{"type":"array"}},"required":["items","config","empty_array"]}'
 
       - name: Verify JSON stringification
+        env:
+          ACTION_STRUCTURED_OUTPUT: ${{ steps.test.outputs.structured_output }}
         run: |
           # Parse the structured_output JSON
-          OUTPUT='${{ steps.test.outputs.structured_output }}'
+          OUTPUT="$ACTION_STRUCTURED_OUTPUT"
 
           # Arrays should be JSON stringified
-          if ! echo "$OUTPUT" | jq -e '.items | length == 3' > /dev/null; then
+          if ! printf '%s' "$OUTPUT" | jq -e '.items | length == 3' > /dev/null 2>&1; then
             echo "❌ Array not properly formatted"
-            echo "$OUTPUT" | jq '.items'
+            echo "Structured output did not match the required shape."
             exit 1
           fi
 
           # Objects should be JSON stringified
-          if ! echo "$OUTPUT" | jq -e '.config.key == "value"' > /dev/null; then
+          if ! printf '%s' "$OUTPUT" | jq -e '.config.key == "value"' > /dev/null 2>&1; then
             echo "❌ Object not properly formatted"
-            echo "$OUTPUT" | jq '.config'
+            echo "Structured output did not match the required shape."
             exit 1
           fi
 
           # Empty arrays should work
-          if ! echo "$OUTPUT" | jq -e '.empty_array | length == 0' > /dev/null; then
+          if ! printf '%s' "$OUTPUT" | jq -e '.empty_array | length == 0' > /dev/null 2>&1; then
             echo "❌ Empty array not properly formatted"
-            echo "$OUTPUT" | jq '.empty_array'
+            echo "Structured output did not match the required shape."
             exit 1
           fi
 
@@ -122,9 +159,14 @@ jobs:
   test-edge-cases:
     name: Test Edge Cases
     runs-on: ubuntu-latest
+    environment: *claude_ci_environment
     steps:
+      - *require_claude_ci
+
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
 
       - name: Test edge cases
         id: test
@@ -138,41 +180,43 @@ jobs:
             - empty_string: ""
             - negative: -5
             - decimal: 3.14
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             --allowedTools Bash
             --json-schema '{"type":"object","properties":{"zero":{"type":"number"},"empty_string":{"type":"string"},"negative":{"type":"number"},"decimal":{"type":"number"}},"required":["zero","empty_string","negative","decimal"]}'
 
       - name: Verify edge cases
+        env:
+          ACTION_STRUCTURED_OUTPUT: ${{ steps.test.outputs.structured_output }}
         run: |
           # Parse the structured_output JSON
-          OUTPUT='${{ steps.test.outputs.structured_output }}'
+          OUTPUT="$ACTION_STRUCTURED_OUTPUT"
 
           # Zero should be "0", not empty or falsy
-          ZERO=$(echo "$OUTPUT" | jq -r '.zero')
+          ZERO=$(printf '%s' "$OUTPUT" | jq -r '.zero' 2>/dev/null)
           if [ "$ZERO" != "0" ]; then
-            echo "❌ Zero: expected '0', got '$ZERO'"
+            echo "❌ Zero field must equal 0."
             exit 1
           fi
 
           # Empty string should be empty (not "null" or missing)
-          EMPTY_STRING=$(echo "$OUTPUT" | jq -r '.empty_string')
+          EMPTY_STRING=$(printf '%s' "$OUTPUT" | jq -r '.empty_string' 2>/dev/null)
           if [ "$EMPTY_STRING" != "" ]; then
-            echo "❌ Empty string: expected '', got '$EMPTY_STRING'"
+            echo "❌ Empty string field must be empty."
             exit 1
           fi
 
           # Negative numbers should work
-          NEGATIVE=$(echo "$OUTPUT" | jq -r '.negative')
+          NEGATIVE=$(printf '%s' "$OUTPUT" | jq -r '.negative' 2>/dev/null)
           if [ "$NEGATIVE" != "-5" ]; then
-            echo "❌ Negative: expected '-5', got '$NEGATIVE'"
+            echo "❌ Negative field must equal -5."
             exit 1
           fi
 
           # Decimals should preserve precision
-          DECIMAL=$(echo "$OUTPUT" | jq -r '.decimal')
+          DECIMAL=$(printf '%s' "$OUTPUT" | jq -r '.decimal' 2>/dev/null)
           if [ "$DECIMAL" != "3.14" ]; then
-            echo "❌ Decimal: expected '3.14', got '$DECIMAL'"
+            echo "❌ Decimal field must equal 3.14."
             exit 1
           fi
 
@@ -181,9 +225,14 @@ jobs:
   test-name-sanitization:
     name: Test Output Name Sanitization
     runs-on: ubuntu-latest
+    environment: *claude_ci_environment
     steps:
+      - *require_claude_ci
+
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
 
       - name: Test special characters in field names
         id: test
@@ -192,27 +241,29 @@ jobs:
           prompt: |
             Run: echo "test"
             Return EXACTLY: {test-result: "passed", item_count: 10}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             --allowedTools Bash
             --json-schema '{"type":"object","properties":{"test-result":{"type":"string"},"item_count":{"type":"number"}},"required":["test-result","item_count"]}'
 
       - name: Verify sanitized names work
+        env:
+          ACTION_STRUCTURED_OUTPUT: ${{ steps.test.outputs.structured_output }}
         run: |
           # Parse the structured_output JSON
-          OUTPUT='${{ steps.test.outputs.structured_output }}'
+          OUTPUT="$ACTION_STRUCTURED_OUTPUT"
 
           # Hyphens should be preserved in the JSON
-          TEST_RESULT=$(echo "$OUTPUT" | jq -r '.["test-result"]')
+          TEST_RESULT=$(printf '%s' "$OUTPUT" | jq -r '.["test-result"]' 2>/dev/null)
           if [ "$TEST_RESULT" != "passed" ]; then
-            echo "❌ Hyphenated name failed: expected 'passed', got '$TEST_RESULT'"
+            echo "❌ Hyphenated field must equal passed."
             exit 1
           fi
 
           # Underscores should work
-          ITEM_COUNT=$(echo "$OUTPUT" | jq -r '.item_count')
+          ITEM_COUNT=$(printf '%s' "$OUTPUT" | jq -r '.item_count' 2>/dev/null)
           if [ "$ITEM_COUNT" != "10" ]; then
-            echo "❌ Underscore name failed: expected '10', got '$ITEM_COUNT'"
+            echo "❌ Underscore field must equal 10."
             exit 1
           fi
 
@@ -221,23 +272,30 @@ jobs:
   test-execution-file-structure:
     name: Test Execution File Format
     runs-on: ubuntu-latest
+    environment: *claude_ci_environment
     steps:
+      - *require_claude_ci
+
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
 
       - name: Run with structured output
         id: test
         uses: ./base-action
         with:
           prompt: "Run: echo 'complete'. Return: {done: true}"
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             --allowedTools Bash
             --json-schema '{"type":"object","properties":{"done":{"type":"boolean"}},"required":["done"]}'
 
       - name: Verify execution file contains structured_output
+        env:
+          ACTION_EXECUTION_FILE: ${{ steps.test.outputs.execution_file }}
         run: |
-          FILE="${{ steps.test.outputs.execution_file }}"
+          FILE="$ACTION_EXECUTION_FILE"
 
           # Check file exists
           if [ ! -f "$FILE" ]; then
@@ -246,14 +304,14 @@ jobs:
           fi
 
           # Check for structured_output field
-          if ! jq -e '.[] | select(.type == "result") | .structured_output' "$FILE" > /dev/null; then
+          if ! jq -e '.[] | select(.type == "result") | .structured_output' "$FILE" > /dev/null 2>&1; then
             echo "❌ No structured_output in execution file"
-            cat "$FILE"
+            echo "Execution data withheld; test assertions report the result."
             exit 1
           fi
 
           # Verify the actual value
-          DONE=$(jq -r '.[] | select(.type == "result") | .structured_output.done' "$FILE")
+          DONE=$(jq -r '.[] | select(.type == "result") | .structured_output.done' "$FILE" 2>/dev/null)
           if [ "$DONE" != "true" ]; then
             echo "❌ Wrong value in execution file"
             exit 1
@@ -274,32 +332,34 @@ jobs:
     steps:
       - name: Generate Summary
         run: |
-          echo "# Structured Output Tests (Optimized)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Fast, deterministic tests using explicit prompts" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Test | Result |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Basic Types | ${{ needs.test-basic-types.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Complex Types | ${{ needs.test-complex-types.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Edge Cases | ${{ needs.test-edge-cases.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Name Sanitization | ${{ needs.test-name-sanitization.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Execution File | ${{ needs.test-execution-file-structure.result == 'success' && '✅ PASS' || '❌ FAIL' }} |" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "# Structured Output Tests (Optimized)"
+            echo ""
+            echo "Fast, deterministic tests using explicit prompts"
+            echo ""
+            echo "| Test | Result |"
+            echo "|------|--------|"
+            echo "| Basic Types | ${{ needs.test-basic-types.result == 'success' && '✅ PASS' || '❌ FAIL' }} |"
+            echo "| Complex Types | ${{ needs.test-complex-types.result == 'success' && '✅ PASS' || '❌ FAIL' }} |"
+            echo "| Edge Cases | ${{ needs.test-edge-cases.result == 'success' && '✅ PASS' || '❌ FAIL' }} |"
+            echo "| Name Sanitization | ${{ needs.test-name-sanitization.result == 'success' && '✅ PASS' || '❌ FAIL' }} |"
+            echo "| Execution File | ${{ needs.test-execution-file-structure.result == 'success' && '✅ PASS' || '❌ FAIL' }} |"
 
-          # Check if all passed
-          ALL_PASSED=${{
-            needs.test-basic-types.result == 'success' &&
-            needs.test-complex-types.result == 'success' &&
-            needs.test-edge-cases.result == 'success' &&
-            needs.test-name-sanitization.result == 'success' &&
-            needs.test-execution-file-structure.result == 'success'
-          }}
+            # Check if all passed
+            ALL_PASSED=${{
+              needs.test-basic-types.result == 'success' &&
+              needs.test-complex-types.result == 'success' &&
+              needs.test-edge-cases.result == 'success' &&
+              needs.test-name-sanitization.result == 'success' &&
+              needs.test-execution-file-structure.result == 'success'
+            }}
 
-          if [ "$ALL_PASSED" = "true" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "## ✅ All Tests Passed" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "## ❌ Some Tests Failed" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          fi
+            if [ "$ALL_PASSED" = "true" ]; then
+              echo ""
+              echo "## ✅ All Tests Passed"
+            else
+              echo ""
+              echo "## ❌ Some Tests Failed"
+              exit 1
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

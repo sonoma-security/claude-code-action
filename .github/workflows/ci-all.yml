@@ -7,6 +7,7 @@ on:
     branches:
       - main
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -18,20 +19,25 @@ jobs:
 
   test-base-action:
     uses: ./.github/workflows/test-base-action.yml
-    secrets: inherit # Required for ANTHROPIC_API_KEY
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   test-custom-executables:
     uses: ./.github/workflows/test-custom-executables.yml
-    secrets: inherit
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   test-mcp-servers:
     uses: ./.github/workflows/test-mcp-servers.yml
-    secrets: inherit
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   test-settings:
     uses: ./.github/workflows/test-settings.yml
-    secrets: inherit
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   test-structured-output:
     uses: ./.github/workflows/test-structured-output.yml
-    secrets: inherit
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
