@@ -10,7 +10,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-type Step = { name?: string; run?: string; env?: Record<string, string> };
+type Step = {
+  name?: string;
+  uses?: string;
+  run?: string;
+  env?: Record<string, string>;
+};
 type Job = { environment?: { name: string }; steps?: Step[] };
 type Workflow = { jobs: Record<string, Job> };
 // CI pins Bun 1.3.14; the repository's older Bun types predate its YAML API.
@@ -72,7 +77,13 @@ function isolated(check: (temp: string) => void) {
 
 const credentialed = workflows.flatMap(({ file, workflow }) =>
   Object.entries(workflow.jobs)
-    .filter(([, job]) => job.environment)
+    .filter(([, job]) =>
+      job.steps?.some(
+        (step) =>
+          step.uses === "./base-action" ||
+          step.uses?.startsWith("anthropics/claude-code-action@"),
+      ),
+    )
     .map(([name, job]) => ({ label: `${file}:${name}`, job })),
 );
 
