@@ -2,14 +2,42 @@ name: Test Settings Feature
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
   workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
 
 jobs:
   test-settings-inline-allow:
     runs-on: ubuntu-latest
+    environment: &claude_ci_environment
+      name: >-
+        ${{ github.event_name != 'pull_request_target' &&
+        github.actor != 'dependabot[bot]' &&
+        github.event.pull_request.draft != true &&
+        (((github.event_name == 'pull_request' || github.event_name == 'workflow_call') &&
+          github.event.pull_request.head.repo.full_name == github.repository) ||
+         ((github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call') &&
+          github.ref == 'refs/heads/main' &&
+          (github.event.pull_request.head.repo.full_name == '' ||
+           github.event.pull_request.head.repo.full_name == github.repository))) &&
+        'security-ci-claude' || 'security-ci-untrusted' }}
     steps:
+      - &require_claude_ci
+        name: Require Claude CI authentication
+        env:
+          CLAUDE_CI_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$CLAUDE_CI_TOKEN" ]; then
+            echo "::error::Claude CI authentication is unavailable for this context."
+            exit 1
+          fi
+
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
 
       - name: Test with inline settings JSON (echo allowed)
         id: inline-settings-test
@@ -17,7 +45,7 @@ jobs:
         with:
           prompt: |
             Use Bash to echo "Hello from settings test"
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           settings: |
             {
               "permissions": {
@@ -26,11 +54,14 @@ jobs:
             }
 
       - name: Verify echo worked
+        env:
+          ACTION_EXECUTION_FILE: ${{ steps.inline-settings-test.outputs.execution_file }}
+          ACTION_CONCLUSION: ${{ steps.inline-settings-test.outputs.conclusion }}
         run: |
-          OUTPUT_FILE="${{ steps.inline-settings-test.outputs.execution_file }}"
-          CONCLUSION="${{ steps.inline-settings-test.outputs.conclusion }}"
+          OUTPUT_FILE="$ACTION_EXECUTION_FILE"
+          CONCLUSION="$ACTION_CONCLUSION"
 
-          echo "Conclusion: $CONCLUSION"
+          echo "Checking action result metadata."
 
           if [ "$CONCLUSION" = "success" ]; then
             echo "✅ Action completed successfully"
@@ -40,25 +71,30 @@ jobs:
           fi
 
           # Check that permission was NOT denied
-          if grep -q "Permission to use Bash with command echo.*has been denied" "$OUTPUT_FILE"; then
+          if grep -q "Permission to use Bash with command echo.*has been denied" "$OUTPUT_FILE" 2>/dev/null; then
             echo "❌ Echo command was denied when it should have been allowed"
-            cat "$OUTPUT_FILE"
+            echo "Execution data withheld; test assertions report the result."
             exit 1
           fi
 
           # Check if the echo command worked
-          if grep -q "Hello from settings test" "$OUTPUT_FILE"; then
+          if grep -q "Hello from settings test" "$OUTPUT_FILE" 2>/dev/null; then
             echo "✅ Bash echo command worked (allowed by permissions)"
           else
             echo "❌ Bash echo command didn't work"
-            cat "$OUTPUT_FILE"
+            echo "Execution data withheld; test assertions report the result."
             exit 1
           fi
 
   test-settings-inline-deny:
     runs-on: ubuntu-latest
+    environment: *claude_ci_environment
     steps:
+      - *require_claude_ci
+
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
 
       - name: Test with inline settings JSON (echo denied)
         id: inline-settings-test
@@ -66,7 +102,7 @@ jobs:
         with:
           prompt: |
             Run the command `echo $HOME` to check the home directory path
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           settings: |
             {
               "permissions": {
@@ -75,22 +111,29 @@ jobs:
             }
 
       - name: Verify echo was denied
+        env:
+          ACTION_EXECUTION_FILE: ${{ steps.inline-settings-test.outputs.execution_file }}
         run: |
-          OUTPUT_FILE="${{ steps.inline-settings-test.outputs.execution_file }}"
+          OUTPUT_FILE="$ACTION_EXECUTION_FILE"
 
           # Check that permission was denied in the tool_result
-          if grep -q "Permission to use Bash with command echo.*has been denied" "$OUTPUT_FILE"; then
+          if grep -q "Permission to use Bash with command echo.*has been denied" "$OUTPUT_FILE" 2>/dev/null; then
             echo "✅ Echo command was correctly denied by permissions"
           else
             echo "❌ Expected permission denied message not found"
-            cat "$OUTPUT_FILE"
+            echo "Execution data withheld; test assertions report the result."
             exit 1
           fi
 
   test-settings-file-allow:
     runs-on: ubuntu-latest
+    environment: *claude_ci_environment
     steps:
+      - *require_claude_ci
+
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
 
       - name: Create settings file (echo allowed)
         run: |
@@ -108,15 +151,18 @@ jobs:
         with:
           prompt: |
             Use Bash to echo "Hello from settings file test"
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           settings: "test-settings.json"
 
       - name: Verify echo worked
+        env:
+          ACTION_EXECUTION_FILE: ${{ steps.file-settings-test.outputs.execution_file }}
+          ACTION_CONCLUSION: ${{ steps.file-settings-test.outputs.conclusion }}
         run: |
-          OUTPUT_FILE="${{ steps.file-settings-test.outputs.execution_file }}"
-          CONCLUSION="${{ steps.file-settings-test.outputs.conclusion }}"
+          OUTPUT_FILE="$ACTION_EXECUTION_FILE"
+          CONCLUSION="$ACTION_CONCLUSION"
 
-          echo "Conclusion: $CONCLUSION"
+          echo "Checking action result metadata."
 
           if [ "$CONCLUSION" = "success" ]; then
             echo "✅ Action completed successfully"
@@ -126,25 +172,30 @@ jobs:
           fi
 
           # Check that permission was NOT denied
-          if grep -q "Permission to use Bash with command echo.*has been denied" "$OUTPUT_FILE"; then
+          if grep -q "Permission to use Bash with command echo.*has been denied" "$OUTPUT_FILE" 2>/dev/null; then
             echo "❌ Echo command was denied when it should have been allowed"
-            cat "$OUTPUT_FILE"
+            echo "Execution data withheld; test assertions report the result."
             exit 1
           fi
 
           # Check if the echo command worked
-          if grep -q "Hello from settings file test" "$OUTPUT_FILE"; then
+          if grep -q "Hello from settings file test" "$OUTPUT_FILE" 2>/dev/null; then
             echo "✅ Bash echo command worked (allowed by permissions)"
           else
             echo "❌ Bash echo command didn't work"
-            cat "$OUTPUT_FILE"
+            echo "Execution data withheld; test assertions report the result."
             exit 1
           fi
 
   test-settings-file-deny:
     runs-on: ubuntu-latest
+    environment: *claude_ci_environment
     steps:
+      - *require_claude_ci
+
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
 
       - name: Create settings file (echo denied)
         run: |
@@ -162,18 +213,20 @@ jobs:
         with:
           prompt: |
             Run the command `echo $HOME` to check the home directory path
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           settings: "test-settings.json"
 
       - name: Verify echo was denied
+        env:
+          ACTION_EXECUTION_FILE: ${{ steps.file-settings-test.outputs.execution_file }}
         run: |
-          OUTPUT_FILE="${{ steps.file-settings-test.outputs.execution_file }}"
+          OUTPUT_FILE="$ACTION_EXECUTION_FILE"
 
           # Check that permission was denied in the tool_result
-          if grep -q "Permission to use Bash with command echo.*has been denied" "$OUTPUT_FILE"; then
+          if grep -q "Permission to use Bash with command echo.*has been denied" "$OUTPUT_FILE" 2>/dev/null; then
             echo "✅ Echo command was correctly denied by permissions"
           else
             echo "❌ Expected permission denied message not found"
-            cat "$OUTPUT_FILE"
+            echo "Execution data withheld; test assertions report the result."
             exit 1
           fi

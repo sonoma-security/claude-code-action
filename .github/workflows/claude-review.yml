@@ -2,25 +2,47 @@ name: PR Review
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
   review:
     runs-on: ubuntu-latest
+    environment:
+      name: >-
+        ${{ github.event_name != 'pull_request_target' &&
+        github.actor != 'dependabot[bot]' &&
+        github.event.pull_request.draft != true &&
+        (((github.event_name == 'pull_request' || github.event_name == 'workflow_call') &&
+          github.event.pull_request.head.repo.full_name == github.repository) ||
+         ((github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call') &&
+          github.ref == 'refs/heads/main' &&
+          (github.event.pull_request.head.repo.full_name == '' ||
+           github.event.pull_request.head.repo.full_name == github.repository))) &&
+        'security-ci-claude' || 'security-ci-untrusted' }}
     permissions:
       contents: read
       pull-requests: write
-      id-token: write
     steps:
+      - name: Require Claude CI authentication
+        env:
+          CLAUDE_CI_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$CLAUDE_CI_TOKEN" ]; then
+            echo "::error::Claude CI authentication is unavailable for this context."
+            exit 1
+          fi
+
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           fetch-depth: 1
 
       - name: PR Review with Progress Tracking
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@d535f5172dec02b204866b393d6b20b9b2aaf98d # v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
 
           prompt: "/review-pr REPO: ${{ github.repository }} PR_NUMBER: ${{ github.event.pull_request.number }}"
           claude_args: |
