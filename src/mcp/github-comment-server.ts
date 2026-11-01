@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // GitHub Comment MCP Server - Minimal server that only provides comment update functionality
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createLimitedMcpServer } from "./server-limits";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { GITHUB_API_URL } from "../github/api/config";
@@ -19,7 +19,7 @@ if (!REPO_OWNER || !REPO_NAME) {
   process.exit(1);
 }
 
-const server = new McpServer({
+const server = createLimitedMcpServer({
   name: "GitHub Comment Server",
   version: "0.0.1",
 });

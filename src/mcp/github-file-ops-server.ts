@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // GitHub File Operations MCP Server
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createLimitedMcpServer } from "./server-limits";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { readFile, stat } from "fs/promises";
@@ -49,7 +49,7 @@ if (!REPO_OWNER || !REPO_NAME || !BRANCH_NAME) {
   process.exit(1);
 }
 
-const server = new McpServer({
+const server = createLimitedMcpServer({
   name: "GitHub File Operations Server",
   version: "0.0.1",
 });
